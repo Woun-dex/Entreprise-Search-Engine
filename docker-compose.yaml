@@ -1,0 +1,129 @@
+name : Search Engine
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: engine_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB : engineSearch
+      POSTGRES_USER : enigne_user
+      POSTGRES_PASSWORD: engine_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL" , "pg_isready -U engine_user -d engineSearch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - engine-network
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: engine_engine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh" , "/scripts/start.sh"]
+    environment:
+      MINIO_ROOT_USER : minioadmin
+      MINIO_ROOT_PASSWORD : miniopass
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+      - ./minio/start.sh:/scripts/start.sh:ro
+    healthcheck:
+      test: ["CMD" , "mc", "ready","local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - engine-network
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: engine_minio_init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "/scripts/init.sh" ]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - ./minio/init.sh:/scripts/init.sh:ro
+    networks:
+      - engine-network
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: engine_kafka
+    restart: unless-stopped
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    networks:
+      - engine-network
+
+  opensearch:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: engine_opensearch
+    environment:
+      - cluster.name=engine-cluster
+      - node.name=os-node-1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - engine-network
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.12.0
+    container_name: engine_opensearch_dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    networks:
+      - engine-network
+
+volumes:
+  postgres-data:
+  minio-data:
+  kafka-data:
+  opensearch-data:
+
+networks:
+  engine-network:
+    driver: bridge
