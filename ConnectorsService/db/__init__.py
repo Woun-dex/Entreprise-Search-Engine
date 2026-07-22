@@ -1,0 +1,1 @@
+# ConnectorsService.db package initialization

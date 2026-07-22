@@ -38,8 +38,7 @@ def parse_markdown_or_text(content: str) -> tuple[str, list[str], str]:
 def compute_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
-    chunks = []
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200):
     start = 0
     text_len = len(text)
     
@@ -54,12 +53,10 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
                 if nice_break != -1 and nice_break > start + chunk_size // 2:
                     end = nice_break + 1
                     
-        chunks.append(text[start:end])
+        yield text[start:end]
         start = end - overlap
         if start < 0 or start >= end:
-            start = end 
-            
-    return chunks
+            start = end
 
 async def process_message(
     msg_value: bytes,
@@ -134,6 +131,12 @@ async def process_message(
         
     text_chunks = chunk_text(clean_content)
     
+    from opensearchpy import helpers
+    
+    bulk_actions = []
+    chunk_records = []
+    
+    i = -1
     for i, text in enumerate(text_chunks):
         chunk_hash = compute_hash(text)
         chunk_key = f"{record.id}-chunk-{i}"
@@ -151,6 +154,7 @@ async def process_message(
             index_status="INDEXED"
         )
         session.add(chunk_record)
+        chunk_records.append(chunk_record)
         
         os_doc = {
             "chunk_key": chunk_key,
@@ -164,20 +168,36 @@ async def process_message(
             "timestamp": now.isoformat()
         }
         
+        bulk_actions.append({
+            "_op_type": "index",
+            "_index": os_settings.opensearch_index,
+            "_id": chunk_key,
+            "_source": os_doc
+        })
+        
+        if len(bulk_actions) >= 50:
+            try:
+                helpers.bulk(os_client, bulk_actions, refresh=False)
+            except Exception as e:
+                logger.error(f"Failed to bulk index chunks: {e}")
+                for cr in chunk_records:
+                    cr.index_status = "FAILED"
+                    cr.last_error = str(e)
+            await session.flush()
+            bulk_actions.clear()
+            chunk_records.clear()
+            
+    if bulk_actions:
         try:
-            os_client.index(
-                index=os_settings.opensearch_index,
-                body=os_doc,
-                id=chunk_key,
-                refresh=True
-            )
+            helpers.bulk(os_client, bulk_actions, refresh=False)
         except Exception as e:
-            logger.error(f"Failed to index chunk {chunk_key}: {e}")
-            chunk_record.index_status = "FAILED"
-            chunk_record.last_error = str(e)
+            logger.error(f"Failed to bulk index chunks: {e}")
+            for chunk_record in chunk_records:
+                chunk_record.index_status = "FAILED"
+                chunk_record.last_error = str(e)
             
     await session.flush()
-    logger.info(f"Successfully processed and indexed {len(text_chunks)} chunks for {metadata.file_path}")
+    logger.info(f"Successfully processed and bulk-indexed {i + 1} chunks for {metadata.file_path}")
     
     tmp_path.unlink(missing_ok=True)
 
@@ -200,8 +220,13 @@ async def main():
     
     try:
         while True:
-            msg = await asyncio.to_thread(consumer.poll, 1.0)
-            
+            try:
+                msg = await asyncio.to_thread(consumer.poll, 1.0)
+            except Exception as e:
+                logger.warning(f"Kafka poll error (topic might not exist yet): {e}")
+                await asyncio.sleep(5)
+                continue
+                
             if msg is None:
                 continue
             if msg.error():

@@ -11,10 +11,16 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class OpenSearchConfig {
 
+    @org.springframework.beans.factory.annotation.Value("${opensearch.host:localhost}")
+    private String openSearchHost;
+
+    @org.springframework.beans.factory.annotation.Value("${opensearch.port:9200}")
+    private int openSearchPort;
+
     @Bean
     public OpenSearchClient openSearchClient() {
         RestClient restClient = RestClient.builder(
-                new HttpHost("localhost", 9200, "http")
+                new HttpHost(openSearchHost, openSearchPort, "http")
         ).build();
 
         RestClientTransport transport = new RestClientTransport(

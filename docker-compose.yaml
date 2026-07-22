@@ -1,4 +1,4 @@
-name : Search Engine
+name: Search Engine
 
 services:
   postgres:
@@ -6,15 +6,15 @@ services:
     container_name: engine_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB : engineSearch
-      POSTGRES_USER : enigne_user
+      POSTGRES_DB: engineSearch
+      POSTGRES_USER: enigne_user
       POSTGRES_PASSWORD: engine_pass
     ports:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL" , "pg_isready -U engine_user -d engineSearch"]
+      test: ["CMD-SHELL", "pg_isready -U enigne_user -d engineSearch"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -25,10 +25,10 @@ services:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: engine_engine
     restart: unless-stopped
-    entrypoint: ["/bin/sh" , "/scripts/start.sh"]
+    entrypoint: ["/bin/sh", "/scripts/start.sh"]
     environment:
-      MINIO_ROOT_USER : minioadmin
-      MINIO_ROOT_PASSWORD : miniopass
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: miniopass
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -36,7 +36,7 @@ services:
       - minio-data:/data
       - ./minio/start.sh:/scripts/start.sh:ro
     healthcheck:
-      test: ["CMD" , "mc", "ready","local"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -50,11 +50,11 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: [ "/bin/sh", "/scripts/init.sh" ]
+    entrypoint: ["/bin/sh", "/scripts/init.sh"]
     environment:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_PASSWORD: miniopass
     volumes:
       - ./minio/init.sh:/scripts/init.sh:ro
     networks:
@@ -115,6 +115,97 @@ services:
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
       DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    networks:
+      - engine-network
+
+  # Application Microservices
+  connectors-api:
+    build:
+      context: .
+      dockerfile: ConnectorsService/Dockerfile
+    container_name: engine_connectors_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "postgresql+asyncpg://enigne_user:engine_pass@postgres:5432/engineSearch"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "minio:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    networks:
+      - engine-network
+
+  fetcher-worker:
+    build:
+      context: .
+      dockerfile: ConnectorsService/Dockerfile
+    container_name: engine_fetcher_worker
+    restart: unless-stopped
+    command: ["python", "ConnectorsService/application/workers/fetcher_scheduler.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "postgresql+asyncpg://enigne_user:engine_pass@postgres:5432/engineSearch"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "minio:9000"
+    depends_on:
+      - connectors-api
+    networks:
+      - engine-network
+
+  parser-worker:
+    build:
+      context: .
+      dockerfile: ConnectorsService/Dockerfile
+    container_name: engine_parser_worker
+    restart: unless-stopped
+    command: ["python", "ConnectorsService/application/workers/parser.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "postgresql+asyncpg://enigne_user:engine_pass@postgres:5432/engineSearch"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "minio:9000"
+      OPENSEARCH_HOST: "opensearch"
+      OPENSEARCH_PORT: "9200"
+    depends_on:
+      - connectors-api
+      - opensearch
+    networks:
+      - engine-network
+
+  search-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: engine_search_service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      OPENSEARCH_HOST: "opensearch"
+      OPENSEARCH_PORT: "9200"
+    depends_on:
+      - opensearch
+    networks:
+      - engine-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: engine_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - connectors-api
+      - search-service
     networks:
       - engine-network
 

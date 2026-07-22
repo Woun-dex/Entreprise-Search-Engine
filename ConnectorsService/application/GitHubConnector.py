@@ -41,16 +41,29 @@ class GitHubConnector:
             print(f"Invalid github URL: {self.connector.source_url}")
             return
             
-        owner = parts[3]
-        repo = parts[4]
-        
-        branch = self.connector.branch_name or "main"
+        owner = parts[3].strip()
+        repo = parts[4].strip()
+        if repo.endswith(".git"):
+            repo = repo[:-4]
 
         async with httpx.AsyncClient() as client:
+            branch = self.connector.branch_name or "main"
             url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
             response = await client.get(url)
+            
+            if response.status_code == 404:
+                # Fallback: check if the actual default branch is different
+                repo_info_url = f"https://api.github.com/repos/{owner}/{repo}"
+                repo_response = await client.get(repo_info_url)
+                if repo_response.status_code == 200:
+                    default_branch = repo_response.json().get("default_branch", "main")
+                    if default_branch != branch:
+                        branch = default_branch
+                        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+                        response = await client.get(url)
+
             if response.status_code != 200:
-                print(f"Failed to fetch repo {owner}/{repo}: {response.status_code}")
+                print(f"Failed to fetch repo tree from {url}: {response.status_code}")
                 return
                 
             tree_data = response.json()

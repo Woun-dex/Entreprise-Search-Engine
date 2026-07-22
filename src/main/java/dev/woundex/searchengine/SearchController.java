@@ -46,9 +46,62 @@ public class SearchController {
                     results.add(hit.source());
                 }
             }
-        } catch (IOException e) {
-            throw new RuntimeException("Error executing search", e);
+        } catch (Exception e) {
+            // Return empty results gracefully when index is not found or error occurs
+            return results;
         }
         return results;
+    }
+
+    @GetMapping("/suggest")
+    public List<String> suggest(@RequestParam String q) {
+        List<String> suggestions = new ArrayList<>();
+        if (q == null || q.trim().isEmpty()) {
+            return suggestions;
+        }
+
+        try {
+            SearchResponse<Map> searchResponse = openSearchClient.search(s -> s
+                            .index(INDEX_NAME)
+                            .size(10)
+                            .query(q1 -> q1
+                                    .multiMatch(m -> m
+                                            .query(q.trim())
+                                            .fields("title^3", "headings^2", "content")
+                                            .type(org.opensearch.client.opensearch._types.query_dsl.TextQueryType.PhrasePrefix)
+                                    )
+                            ),
+                    Map.class
+            );
+
+            java.util.Set<String> uniqueSuggestions = new java.util.LinkedHashSet<>();
+            for (Hit<Map> hit : searchResponse.hits().hits()) {
+                Map source = hit.source();
+                if (source != null) {
+                    Object titleObj = source.get("title");
+                    if (titleObj != null) {
+                        String titleStr = titleObj.toString().trim();
+                        if (!titleStr.isEmpty()) {
+                            uniqueSuggestions.add(titleStr);
+                        }
+                    }
+                    Object headingsObj = source.get("headings");
+                    if (headingsObj instanceof List) {
+                        for (Object h : (List<?>) headingsObj) {
+                            if (h != null) {
+                                String hStr = h.toString().trim();
+                                if (!hStr.isEmpty()) {
+                                    uniqueSuggestions.add(hStr);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            suggestions.addAll(uniqueSuggestions);
+        } catch (Exception e) {
+            // Return empty list gracefully on failure or missing index
+        }
+        return suggestions;
     }
 }

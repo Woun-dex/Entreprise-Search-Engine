@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from enterprise_search.db.models.file_metadata import (
+from ConnectorsService.models.file_metadata import (
     FileMetadataModel,
 )
 

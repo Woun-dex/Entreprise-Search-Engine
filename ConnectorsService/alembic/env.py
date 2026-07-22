@@ -22,7 +22,10 @@ target_metadata = Base.metadata
 
 from ConnectorsService.config import get_settings
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+db_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+if not db_url.startswith("postgresql+psycopg2://") and db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg2://")
+config.set_main_option("sqlalchemy.url", db_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

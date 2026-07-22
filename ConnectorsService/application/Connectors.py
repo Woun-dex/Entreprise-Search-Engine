@@ -1,9 +1,15 @@
 import hashlib
 import mimetypes
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Ensure project root is in sys.path for package imports
+root_path = Path(__file__).resolve().parents[2]
+if str(root_path) not in sys.path:
+    sys.path.insert(0, str(root_path))
 
 from minio import Minio
 
