@@ -16,6 +16,9 @@ from ConnectorsService.models.chunked_document import DocumentChunkModel
 from ConnectorsService.repositories.canonical_document_repository import CanonicalDocumentRepository
 from ConnectorsService.schema.event_envelope import EventEnvelope
 from ConnectorsService.schema.file_metadata import FileMetadata
+from ConnectorsService.config.KafkaProducerConfig import create_producer
+from ConnectorsService.publisher.KafkaPublisher import KafkaPublisher
+from ConnectorsService.publisher.dlq_publisher import publish_to_dlq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("parser_worker")
@@ -66,12 +69,8 @@ async def process_message(
     minio_settings,
     os_settings,
 ):
-    try:
-        data = json.loads(msg_value)
-        envelope = EventEnvelope[FileMetadata].model_validate(data)
-    except Exception as e:
-        logger.error(f"Failed to parse event envelope: {e}")
-        return
+    data = json.loads(msg_value)
+    envelope = EventEnvelope[FileMetadata].model_validate(data)
 
     metadata = envelope.payload
     
@@ -215,6 +214,9 @@ async def main():
     minio_client = get_minio_client(minio_settings)
     os_client = get_opensearch_client(os_settings)
     
+    producer = create_producer(kafka_settings, client_name="parser-dlq-producer")
+    dlq_publisher = KafkaPublisher(producer)
+    
     consumer.subscribe([kafka_settings.topic_raw_file_available])
     logger.info("Consolidated parser/chunker worker started. Listening for RawFileAvailable events...")
     
@@ -233,16 +235,27 @@ async def main():
                 logger.error(f"Consumer error: {msg.error()}")
                 continue
                 
-            async with AsyncSessionFactory() as session:
-                await process_message(
-                    msg.value(),
-                    session,
-                    minio_client,
-                    os_client,
-                    minio_settings,
-                    os_settings
+            try:
+                async with AsyncSessionFactory() as session:
+                    await process_message(
+                        msg.value(),
+                        session,
+                        minio_client,
+                        os_client,
+                        minio_settings,
+                        os_settings
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.error(f"Error processing message: {e}. Publishing to DLQ.")
+                publish_to_dlq(
+                    publisher=dlq_publisher,
+                    dlq_topic=kafka_settings.topic_dead_letter,
+                    worker_name="parser-worker",
+                    error_reason=str(e),
+                    original_message=msg.value(),
+                    original_topic=msg.topic()
                 )
-                await session.commit()
                 
             consumer.commit(message=msg)
             
